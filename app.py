@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import asyncio
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -67,7 +68,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Воспользуйтесь калькулятором:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# 4. ИНИЦИАЛИЗАЦИЯ БОТА (ОДИН РАЗ)
+# 4. ИНИЦИАЛИЗАЦИЯ БОТА
 # ==========================================
 application = Application.builder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
@@ -79,13 +80,20 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_t
 # ==========================================
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
-    """Сюда Telegram будет присылать все сообщения"""
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
-        # Важно: нужно "пробудить" бота и передать ему обновление
-        import asyncio
-        asyncio.run(application.process_update(update))
+        
+        # ФИКС: Правильная асинхронная инициализация
+        async def process_update_safely():
+            await application.initialize()
+            await application.start()
+            await application.process_update(update)
+            await application.stop()
+            await application.shutdown()
+            
+        asyncio.run(process_update_safely())
+        
     except Exception as e:
         logger.error(f"Ошибка в вебхуке: {e}")
     return "OK", 200
@@ -94,21 +102,6 @@ def webhook():
 def index():
     return "Bot is running!"
 
-# ==========================================
-# 6. УСТАНОВКА ВЕБХУКА (Выполнить один раз)
-# ==========================================
-def set_webhook():
-    """Эта функция сообщает Telegram, куда отправлять сообщения"""
-    # Ссылка на наш сервис на Render
-    render_url = "https://alexbot-wev9.onrender.com"  # <-- ВАЖНО: Проверь эту ссылку!
-    webhook_url = f"{render_url}/{TOKEN}"
-    
-    import requests
-    res = requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
-    print(res.text)
-
 if __name__ == "__main__":
-    # При запуске на Render мы НЕ вызываем set_webhook здесь.
-    # Это нужно сделать один раз вручную (см. инструкцию ниже).
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
