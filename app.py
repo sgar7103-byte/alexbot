@@ -1,9 +1,7 @@
 import os
 import json
 import logging
-import threading
-import asyncio
-from flask import Flask
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -22,13 +20,12 @@ PORTFOLIO_URL = "https://t.me/vsemdobra12345"
 # ==========================================
 app = Flask(__name__)
 
-@app.route('/')
-def index():
-    return "Bot is running!"
-
 # ==========================================
 # 3. ЛОГИКА БОТА
 # ==========================================
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Получена команда /start от {update.effective_user.id}")
     user_name = update.effective_user.first_name or "друг"
@@ -38,18 +35,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📸 Примеры работ", url=PORTFOLIO_URL)],
         [InlineKeyboardButton("📞 Связаться с мастером", url=CONTACT_URL)]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     welcome_text = (
         f"<b>Здравствуйте, {user_name}! 👋</b>\n\n"
         "Я Алексей — мастер на час. 🔧\n"
         "Помогу с ремонтом, сборкой мебели и другими делами.\n\n"
         "Нажмите кнопку ниже, чтобы рассчитать стоимость и оставить заявку:"
     )
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='HTML')
+    await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
 async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Получены данные из Mini App!")
     try:
         data = json.loads(update.effective_message.web_app_data.data)
         order_text = "<b>🔔 НОВАЯ ЗАЯВКА</b>\n\n"
@@ -63,49 +57,58 @@ async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_text += f"\n💰 <b>Примерная стоимость:</b> {data.get('total', 0)} ₽"
         if data.get('urgent'):
             order_text += "\n\n🔥 <b>СРОЧНЫЙ ВЫЗОВ (+20%)</b>"
-
         await context.bot.send_message(chat_id=ADMIN_ID, text=order_text, parse_mode='HTML')
         await update.message.reply_text("✅ <b>Спасибо!</b> Заявка отправлена мастеру.", parse_mode='HTML')
     except Exception as e:
         logger.error(f"Ошибка заявки: {e}")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Получен текст от {update.effective_user.id}")
     keyboard = [[InlineKeyboardButton("🛠 Открыть калькулятор", web_app=WebAppInfo(url=WEB_APP_URL))]]
     await update.message.reply_text("Воспользуйтесь калькулятором:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# 4. ЗАПУСК С ИСПРАВЛЕНИЕМ ОШИБКИ ЦИКЛА
+# 4. ИНИЦИАЛИЗАЦИЯ БОТА (ОДИН РАЗ)
 # ==========================================
-def run_bot():
-    try:
-        # ВОТ ОНО! Создаем свой цикл событий для потока
-        asyncio.set_event_loop(asyncio.new_event_loop())
-        
-        print("=====================================")
-        print("ЗАПУСК БОТА...")
-        if not TOKEN:
-            print("ОШИБКА: ТОКЕН ПУСТОЙ! Проверь Environment Variables в Render.")
-            return
-            
-        print(f"Токен найден, начинается на: {TOKEN[:5]}...")
-        
-        application = Application.builder().token(TOKEN).build()
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-        
-        print("БОТ УСПЕШНО ЗАПУЩЕН И ЖДЕТ СООБЩЕНИЙ!")
-        print("=====================================")
-        
-        # Запускаем бота (drop_pending_updates=True очищает старые зависшие сообщения)
-        application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-    except Exception as e:
-        print(f"КРИТИЧЕСКАЯ ОШИБКА БОТА: {e}")
+application = Application.builder().token(TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-# Запускаем бота в фоне при старте скрипта
-threading.Thread(target=run_bot, daemon=True).start()
+# ==========================================
+# 5. ВЕБХУК (Принимает сообщения от Telegram)
+# ==========================================
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    """Сюда Telegram будет присылать все сообщения"""
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, application.bot)
+        # Важно: нужно "пробудить" бота и передать ему обновление
+        import asyncio
+        asyncio.run(application.process_update(update))
+    except Exception as e:
+        logger.error(f"Ошибка в вебхуке: {e}")
+    return "OK", 200
+
+@app.route('/')
+def index():
+    return "Bot is running!"
+
+# ==========================================
+# 6. УСТАНОВКА ВЕБХУКА (Выполнить один раз)
+# ==========================================
+def set_webhook():
+    """Эта функция сообщает Telegram, куда отправлять сообщения"""
+    # Ссылка на наш сервис на Render
+    render_url = "https://alexbot-wev9.onrender.com"  # <-- ВАЖНО: Проверь эту ссылку!
+    webhook_url = f"{render_url}/{TOKEN}"
+    
+    import requests
+    res = requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
+    print(res.text)
 
 if __name__ == "__main__":
+    # При запуске на Render мы НЕ вызываем set_webhook здесь.
+    # Это нужно сделать один раз вручную (см. инструкцию ниже).
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
