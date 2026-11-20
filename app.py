@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-import threading
+import asyncio
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -25,7 +25,7 @@ app = Flask(__name__)
 def index():
     return "Bot is running!"
 
-# Настройка логов
+# Включаем логи
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -55,7 +55,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='HTML')
 
 async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Получены данные из Mini App!")
     try:
         data = json.loads(update.effective_message.web_app_data.data)
         order_text = "<b>🔔 НОВАЯ ЗАЯВКА</b>\n\n"
@@ -76,29 +75,39 @@ async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка заявки: {e}")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Получен текст от {update.effective_user.id}")
     keyboard = [[InlineKeyboardButton("🛠 Открыть калькулятор", web_app=WebAppInfo(url=WEB_APP_URL))]]
     await update.message.reply_text("Воспользуйтесь калькулятором:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# 4. ЗАПУСК
+# 4. ЗАПУСК (ГЛАВНАЯ МАГИЯ ЗДЕСЬ)
 # ==========================================
 def run_bot():
     try:
-        logger.info(f"Запуск бота. Токен начинается на: {TOKEN[:10] if TOKEN else 'ПУСТОЙ!'}")
+        print("=====================================")
+        print("ЗАПУСК БОТА...")
+        if not TOKEN:
+            print("ОШИБКА: ТОКЕН ПУСТОЙ! Проверь Environment Variables в Render.")
+            return
+            
+        print(f"Токен найден, начинается на: {TOKEN[:5]}...")
+        
         application = Application.builder().token(TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         
-        logger.info("Бот перешел в режим ожидания сообщений (Polling)...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        print("БОТ УСПЕШНО ЗАПУЩЕН И ЖДЕТ СООБЩЕНИЙ!")
+        print("=====================================")
+        
+        # Запускаем бота
+        application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
     except Exception as e:
-        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА БОТА: {e}")
+        print(f"КРИТИЧЕСКАЯ ОШИБКА БОТА: {e}")
+
+# Запускаем бота при старте скрипта (не зависимо от того, как Render его вызвал)
+import threading
+threading.Thread(target=run_bot, daemon=True).start()
 
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.start()
-    
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
