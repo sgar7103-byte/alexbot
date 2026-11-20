@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import threading
 import asyncio
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
@@ -25,13 +26,6 @@ app = Flask(__name__)
 def index():
     return "Bot is running!"
 
-# Включаем логи
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
 # ==========================================
 # 3. ЛОГИКА БОТА
 # ==========================================
@@ -55,6 +49,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='HTML')
 
 async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Получены данные из Mini App!")
     try:
         data = json.loads(update.effective_message.web_app_data.data)
         order_text = "<b>🔔 НОВАЯ ЗАЯВКА</b>\n\n"
@@ -75,14 +70,18 @@ async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка заявки: {e}")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Получен текст от {update.effective_user.id}")
     keyboard = [[InlineKeyboardButton("🛠 Открыть калькулятор", web_app=WebAppInfo(url=WEB_APP_URL))]]
     await update.message.reply_text("Воспользуйтесь калькулятором:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# 4. ЗАПУСК (ГЛАВНАЯ МАГИЯ ЗДЕСЬ)
+# 4. ЗАПУСК С ИСПРАВЛЕНИЕМ ОШИБКИ ЦИКЛА
 # ==========================================
 def run_bot():
     try:
+        # ВОТ ОНО! Создаем свой цикл событий для потока
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        
         print("=====================================")
         print("ЗАПУСК БОТА...")
         if not TOKEN:
@@ -99,13 +98,12 @@ def run_bot():
         print("БОТ УСПЕШНО ЗАПУЩЕН И ЖДЕТ СООБЩЕНИЙ!")
         print("=====================================")
         
-        # Запускаем бота
+        # Запускаем бота (drop_pending_updates=True очищает старые зависшие сообщения)
         application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         print(f"КРИТИЧЕСКАЯ ОШИБКА БОТА: {e}")
 
-# Запускаем бота при старте скрипта (не зависимо от того, как Render его вызвал)
-import threading
+# Запускаем бота в фоне при старте скрипта
 threading.Thread(target=run_bot, daemon=True).start()
 
 if __name__ == "__main__":
